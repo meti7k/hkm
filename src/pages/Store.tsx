@@ -1,20 +1,27 @@
 import React from 'react';
 import { useApp } from '../context/AppContext';
-import { Coins } from 'lucide-react';
+import { StoreService } from '../services/api';
+import { Coins, ShoppingBag } from 'lucide-react';
+import { useQuery } from '@tanstack/react-query';
 
 export const Store = () => {
   const { user, addCoins } = useApp();
 
-  const packages = [
-    { amount: 100, price: '۲۰,۰۰۰ تومان', bonus: 0 },
-    { amount: 500, price: '۹۰,۰۰۰ تومان', bonus: 50, popular: true },
-    { amount: 1000, price: '۱۷۰,۰۰۰ تومان', bonus: 150 },
-  ];
+  // Cache store packages for 1 hour to prevent redundant requests
+  const { data, isLoading } = useQuery({
+    queryKey: ['packages'],
+    queryFn: () => StoreService.listPackages(),
+    staleTime: 1000 * 60 * 60, // 1 hour
+  });
+
+  const packages = data?.data?.packages || [];
 
   return (
     <div className="h-full bg-slate-950 p-6 flex flex-col">
       <div className="flex items-center gap-4 mb-6 shrink-0">
-        <h1 className="text-lg font-bold">فروشگاه سکه</h1>
+        <h1 className="text-lg font-bold flex items-center gap-2">
+            <ShoppingBag className="text-gold-500" size={20} /> فروشگاه
+        </h1>
       </div>
 
       <div className="bg-gradient-to-r from-gold-500 to-amber-600 rounded-2xl p-6 mb-8 text-slate-900 shadow-lg shadow-amber-900/20 shrink-0">
@@ -29,34 +36,40 @@ export const Store = () => {
         </div>
       </div>
 
-      <h3 className="text-slate-400 text-xs font-bold mb-4 shrink-0">بسته‌های پیشنهادی</h3>
+      <h3 className="text-slate-400 text-xs font-bold mb-4 shrink-0">بسته‌های موجود</h3>
       
-      <div className="flex flex-col gap-4">
-        {packages.map((pkg, idx) => (
-          <div key={idx} className={`relative bg-slate-900 border ${pkg.popular ? 'border-gold-500' : 'border-slate-800'} rounded-2xl p-4 flex items-center justify-between shadow-md`}>
-            {pkg.popular && (
-              <span className="absolute -top-2.5 left-4 bg-gold-500 text-slate-950 text-[10px] font-bold px-2 py-0.5 rounded-md shadow-sm">محبوب</span>
-            )}
-            
-            <div className="flex items-center gap-4">
-              <div className="w-12 h-12 rounded-full bg-slate-800 flex items-center justify-center text-gold-400 border border-slate-700">
-                <Coins size={20} className="fill-current" />
-              </div>
-              <div>
-                <h4 className="font-bold text-base text-white">{pkg.amount} سکه</h4>
-                {pkg.bonus > 0 && <p className="text-green-500 text-[10px] mt-0.5">+{pkg.bonus} هدیه</p>}
-              </div>
-            </div>
+      {isLoading ? (
+          <div className="flex justify-center py-10"><div className="animate-spin w-8 h-8 border-4 border-gold-500 border-t-transparent rounded-full"></div></div>
+      ) : (
+        <div className="flex flex-col gap-4">
+            {packages.map((pkg) => (
+            <div key={pkg.id} className="relative bg-slate-900 border border-slate-800 rounded-2xl p-4 flex items-center justify-between shadow-md hover:border-slate-700 transition-colors">
+                {pkg.discount > 0 && (
+                <span className="absolute -top-2.5 left-4 bg-red-500 text-white text-[10px] font-bold px-2 py-0.5 rounded-md shadow-sm">
+                    {pkg.discount}% تخفیف
+                </span>
+                )}
+                
+                <div className="flex items-center gap-4">
+                <div className="w-12 h-12 rounded-full bg-slate-800 flex items-center justify-center text-gold-400 border border-slate-700">
+                    <Coins size={20} className="fill-current" />
+                </div>
+                <div>
+                    <h4 className="font-bold text-base text-white">{pkg.amount.toLocaleString()} سکه</h4>
+                    <p className="text-[10px] text-slate-500 mt-0.5">{pkg.title}</p>
+                </div>
+                </div>
 
-            <button 
-              onClick={() => addCoins(pkg.amount)}
-              className="bg-slate-800 hover:bg-slate-700 text-white px-4 py-2 rounded-xl text-xs font-bold transition-colors border border-slate-700"
-            >
-              {pkg.price}
-            </button>
-          </div>
-        ))}
-      </div>
+                <button 
+                onClick={() => addCoins(pkg.amount)} // Mock purchase
+                className="bg-slate-800 hover:bg-slate-700 text-white px-4 py-2 rounded-xl text-xs font-bold transition-colors border border-slate-700"
+                >
+                {pkg.price.toLocaleString()} تومان
+                </button>
+            </div>
+            ))}
+        </div>
+      )}
     </div>
   );
 };

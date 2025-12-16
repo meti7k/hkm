@@ -1,29 +1,28 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import { UserProfile, Friend, Player, GameRequest, GameHistoryItem } from '../types';
+import { UserProfile, Gender, User } from '../types';
+import { AuthService, UserService } from '../services/api';
+import socketService from '../services/socket';
+import { useQueryClient } from '@tanstack/react-query';
 
 interface AppContextType {
   user: UserProfile;
+  isLoading: boolean;
   updateUser: (data: Partial<UserProfile>) => void;
-  registerUser: (name: string, age: string, gender: 'male' | 'female' | 'other') => void;
+  registerUser: (name: string, username: string, age: number, gender: Gender) => Promise<boolean>;
+  refreshProfile: (force?: boolean) => Promise<void>;
   addCoins: (amount: number) => void;
-  spendCoins: (amount: number) => boolean;
-  addFriend: (player: Player) => void;
-  removeFriend: (friendId: string) => void;
-  blockUser: (playerId: string) => void;
-  unblockUser: (playerId: string) => void;
-  isFriend: (playerId: string) => boolean;
-  isBlocked: (playerId: string) => boolean;
-  sendGameRequest: (friendId: string) => boolean; // Changed to return success
-  acceptGameRequest: (requestId: string) => void;
-  rejectGameRequest: (requestId: string) => void;
+  unblockUser: (userId: number) => void;
 }
 
 const defaultUser: UserProfile = {
+  id: 0,
   name: '',
-  age: '',
-  gender: 'male',
-  avatar: 'https://api.dicebear.com/9.x/avataaars/svg?seed=Felix',
-  coins: 50,
+  username: '',
+  profile_url: '',
+  avatar: '',
+  age: 0,
+  gender: 'unspecified',
+  coins: 100,
   wins: 0,
   losses: 0,
   level: 1,
@@ -31,160 +30,156 @@ const defaultUser: UserProfile = {
   friends: [],
   blocked: [],
   gameRequests: [],
-  history: [
-      { id: 'h1', date: Date.now().toString(), opponentName: 'کامبیز', opponentAvatar: 'https://api.dicebear.com/9.x/avataaars/svg?seed=Kambiz', result: 'win', score: '3 - 1', coins: 100 },
-      { id: 'h2', date: (Date.now() - 86400000).toString(), opponentName: 'سارا', opponentAvatar: 'https://api.dicebear.com/9.x/avataaars/svg?seed=Sara', result: 'loss', score: '2 - 3', coins: -50 },
-  ]
+  history: []
 };
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [user, setUser] = useState<UserProfile>(() => {
-    const saved = localStorage.getItem('hokm_user');
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved);
-        return {
-            ...defaultUser,
-            ...parsed,
-            friends: Array.isArray(parsed.friends) ? parsed.friends : [],
-            blocked: Array.isArray(parsed.blocked) ? parsed.blocked : [],
-            gameRequests: Array.isArray(parsed.gameRequests) ? parsed.gameRequests : [],
-            history: Array.isArray(parsed.history) ? parsed.history : defaultUser.history
-        };
-      } catch (e) {
-        console.error("Error parsing user data", e);
-        return defaultUser;
+  const [user, setUser] = useState<UserProfile>(defaultUser);
+  const [isLoading, setIsLoading] = useState(true);
+  const queryClient = useQueryClient();
+
+  useEffect(() => {
+    const init = async () => {
+      // @ts-ignore
+      let tgData = window.Telegram?.WebApp?.initData;
+
+      if (!tgData) {
+        const hash = window.location.hash.slice(1);
+        const params = new URLSearchParams(hash);
+        if (params.has('tgWebAppData')) {
+            tgData = params.get('tgWebAppData');
+        }
       }
-    }
-    return defaultUser;
-  });
+
+      if (tgData) {
+        try {
+            const res = await AuthService.hello({ data: tgData });
+            const { token, registered, parsed_user } = res.data;
+
+            localStorage.setItem('auth_token', token);
+
+            if (registered) {
+                await refreshProfile(true); 
+            } else {
+                setUser(prev => ({
+                    ...prev,
+                    id: parsed_user.id,
+                    name: parsed_user.first_name || '',
+                    username: parsed_user.username || '',
+                    profile_url: parsed_user.photo_url || '',
+                    avatar: parsed_user.photo_url || `https://api.dicebear.com/9.x/avataaars/svg?seed=${parsed_user.id}`,
+                    isRegistered: false 
+                }));
+            }
+        } catch (e) {
+            console.error("Auth Hello Failed:", e);
+        }
+      } else {
+          const storedToken = localStorage.getItem('auth_token');
+          if (storedToken) {
+              try {
+                  await refreshProfile(true);
+              } catch (e) {
+                  console.error("Token invalid:", e);
+                  localStorage.removeItem('auth_token');
+              }
+          }
+      }
+      
+      setIsLoading(false);
+    };
+
+    init();
+  }, []);
 
   useEffect(() => {
-    localStorage.setItem('hokm_user', JSON.stringify(user));
-  }, [user]);
+    if (user.isRegistered) {
+        socketService.connect();
+        
+        const handleUserStatus = (data: { event: string; user: User; status: string }) => {
+            queryClient.invalidateQueries({ queryKey: ['friends'] });
+        };
 
-  // Mock incoming requests for demo
-  useEffect(() => {
-    if (user.isRegistered && user.gameRequests.length === 0) {
-        const timer = setTimeout(() => {
-            const mockRequest: GameRequest = {
-                id: 'req-1',
-                sender: { id: 'bot-req', name: 'کامبیز', avatar: 'https://api.dicebear.com/9.x/avataaars/svg?seed=Kambiz', level: 5 },
-                message: 'سلام، میای بازی؟',
-                timestamp: Date.now()
-            };
-            setUser(prev => ({ ...prev, gameRequests: [...prev.gameRequests, mockRequest] }));
-        }, 15000); // Delayed a bit more
-        return () => clearTimeout(timer);
+        socketService.on('user_status', handleUserStatus);
+        
+        return () => {
+            socketService.off('user_status', handleUserStatus);
+            socketService.disconnect();
+        };
     }
-  }, [user.isRegistered]);
+  }, [user.isRegistered, queryClient]);
 
-  const updateUser = (data: Partial<UserProfile>) => {
-    setUser(prev => ({ ...prev, ...data }));
+  const refreshProfile = async (force = false) => {
+    try {
+      const userRes = await UserService.getMe();
+      const userData = userRes.data;
+      const avatarUrl = userData.profile_url || `https://api.dicebear.com/9.x/avataaars/svg?seed=${userData.id}`;
+
+      setUser(prev => ({
+        ...prev,
+        ...userData,
+        id: userData.id,
+        name: userData.name || '',
+        username: userData.username || '',
+        profile_url: userData.profile_url || '',
+        avatar: avatarUrl,
+        isRegistered: true,
+        friends: [], 
+        blocked: [],
+      }));
+      
+    } catch (e) {
+      console.error("Refresh Profile Failed:", e);
+    }
   };
 
-  const registerUser = (name: string, age: string, gender: 'male' | 'female' | 'other') => {
-    setUser({
-      ...defaultUser,
-      name,
-      age,
-      gender,
-      isRegistered: true,
-      avatar: `https://api.dicebear.com/9.x/avataaars/svg?seed=${name}`
-    });
+  const registerUser = async (name: string, username: string, age: number, gender: Gender) => {
+    try {
+      const res = await UserService.updateSettings({ name, username, age, gender });
+      
+      if (res.status === 200) {
+        await refreshProfile(true);
+        return true;
+      }
+    } catch (e) {
+      console.error(e);
+    }
+    return false;
+  };
+
+  const updateUser = async (data: Partial<UserProfile>) => {
+    try {
+        await UserService.updateSettings({
+            name: data.name || undefined,
+            age: data.age || undefined,
+            gender: data.gender || undefined,
+            username: data.username || undefined
+        });
+        await refreshProfile(true);
+    } catch (e) {
+        console.error(e);
+    }
   };
 
   const addCoins = (amount: number) => {
     setUser(prev => ({ ...prev, coins: prev.coins + amount }));
   };
 
-  const spendCoins = (amount: number) => {
-    if (user.coins >= amount) {
-      setUser(prev => ({ ...prev, coins: prev.coins - amount }));
-      return true;
-    }
-    return false;
-  };
-
-  const addFriend = (player: Player) => {
-    const currentFriends = user.friends || [];
-    if (currentFriends.some(f => f.id === player.id)) return;
-    
-    const newFriend: Friend = {
-        id: player.id,
-        name: player.name,
-        avatar: player.avatar,
-        level: Math.floor(Math.random() * 20) + 1
-    };
-    setUser(prev => ({ ...prev, friends: [...(prev.friends || []), newFriend] }));
-  };
-
-  const removeFriend = (friendId: string) => {
-      setUser(prev => ({
-          ...prev,
-          friends: prev.friends.filter(f => f.id !== friendId)
-      }));
-  };
-
-  const blockUser = (playerId: string) => {
-    const currentBlocked = user.blocked || [];
-    if (currentBlocked.includes(playerId)) return;
-    
-    setUser(prev => ({
-        ...prev,
-        blocked: [...(prev.blocked || []), playerId],
-        friends: (prev.friends || []).filter(f => f.id !== playerId)
-    }));
-  };
-
-  const unblockUser = (playerId: string) => {
-    setUser(prev => ({
-        ...prev,
-        blocked: (prev.blocked || []).filter(id => id !== playerId)
-    }));
-  };
-
-  const isFriend = (playerId: string) => user.friends?.some(f => f.id === playerId) ?? false;
-  const isBlocked = (playerId: string) => user.blocked?.includes(playerId) ?? false;
-
-  const sendGameRequest = (friendId: string) => {
-      // Mock sending request
-      console.log("Sending request to", friendId);
-      return true;
-  };
-
-  const acceptGameRequest = (requestId: string) => {
-      setUser(prev => ({
-          ...prev,
-          gameRequests: prev.gameRequests.filter(r => r.id !== requestId)
-      }));
-  };
-
-  const rejectGameRequest = (requestId: string) => {
-      setUser(prev => ({
-          ...prev,
-          gameRequests: prev.gameRequests.filter(r => r.id !== requestId)
-      }));
+  const unblockUser = (userId: number) => {
+      setUser(prev => ({...prev, blocked: prev.blocked.filter(id => id !== userId)}));
   };
 
   return (
     <AppContext.Provider value={{ 
         user, 
+        isLoading,
         updateUser, 
         registerUser, 
-        addCoins, 
-        spendCoins,
-        addFriend,
-        removeFriend,
-        blockUser,
-        unblockUser,
-        isFriend,
-        isBlocked,
-        sendGameRequest,
-        acceptGameRequest,
-        rejectGameRequest
+        refreshProfile,
+        addCoins,
+        unblockUser
     }}>
       {children}
     </AppContext.Provider>
